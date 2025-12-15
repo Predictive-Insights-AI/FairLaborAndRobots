@@ -1,0 +1,9 @@
+SurveyItemKey,SurveyItemName,SurveyItemDescription,ResponseCode,TopBoxCode
+24225,Question 1,Nurse was friendly,1 to 4,4
+24226,Question 2,Nurse spent time with you,1 to 4,4
+24232,Question 3,Physician was friendly,1 to 4,4
+24234,Question 4,Physician spent time with you,1 to 4,4
+24250,Question 5,Medicine instructions,1 to 4,4
+28361,Question 6,Clarity of treatment plan,1 to 4,4
+24240,Question 7,Environment,1 to 4,4
+24254,Question 8,Quality of care,1 to 4,4

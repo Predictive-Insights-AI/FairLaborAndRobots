@@ -1,0 +1,344 @@
+---
+title: "Press Ganey Analytics Exercise"
+author: "Sam Castillo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: cerulean
+    number_sections: true
+    toc: yes
+  bibliography: bibliography.bib
+csl: biomed-central.csl
+email: castillo.sam.d@gmail.com
+
+---
+
+```{r include = F, warning = F, message = F}
+library(tidyverse)
+library(lubridate)
+library(readr)
+library(tidyr)
+library(ggpubr)
+knitr::opts_chunk$set( warning=FALSE, message=FALSE)
+```
+
+
+# Overview
+
+>This exercise is designed to gauge your basic ability to merge tables and analyze data.  The data represents patients’ typical assessments of their experience with a medical encounter
+
+## Data
+
+>These tables are an artificial and significantly simplified version of our data
+
+**Survey:** Table that identifies, for each completed survey (identified by `SurveyKey` – one for each survey returned), the `Mode` the survey was conducted in.
+
+**SurveyItem:** Table with fields relevant to content of survey:
+
+  * `SurveyItemVariable`: Question/rating that respondent is answering
+  * `Survey`
+  * `ResponseCode`: Rating scale of item. Many of our survey items ask ordinal response questions (e.g. on a scale to 1 to 5: completely disagree to completely agree), with a higher value being better.
+  * `TopBoxCode`: This is the value for the `ResponseCode` that we consider “TopBox” – the highest rating.
+  * `SurveyItemReportName`: Brief description of question corresponding to `SurveyItemVariable`
+  
+**Patient:**: Demographics table with `PatientSex` and `PatientBirthDateKey` (all birth-dates changed to January 1). Birthdate is in format YYYYMMDD.
+
+**Response**: Table with survey response value (`SurveyResponse`), in a key-value structure; e.g. one row per item, per respondent. Also includes fields used to merge with `Survey`, `Patient` and `SurveyItem` fields.
+
+```{r, message = F}
+Survey <- read_csv("Survey.csv")
+SurveyItem <- read_csv("SurveyItem.csv")
+Patient <- read_csv("Patient.csv")
+Response <- read_csv("Response.csv")
+
+#reformat columns
+Patient <- Patient %>% 
+  mutate(PatientBirthDate = ymd(PatientBirthDate))
+```
+
+# Data Validation
+
+I always check that the primary keys are unique.  A primary key is a unique set of columns which identify all rows in the table.  For `Survey`, this should be `SurveyKey`.  I create a function to check the primary key of any table.  This returns TRUE if the keys are unique and FALSE if not.
+
+```{r}
+check_primary_key <- function(table, keys_to_check){
+  n_unique_keys <- table %>% group_by_at(keys_to_check) %>% summarise(n = n()) %>% ungroup() %>% summarise(n_distinct = sum(n))
+  n_unique_keys == nrow(table)
+}
+```
+
+All of the tables look good.
+
+```{r}
+check_primary_key(Survey, "SurveyKey")
+check_primary_key(Patient, c("PatientKey", "ClientKey"))
+check_primary_key(Response, "ResponseKey")
+```
+
+
+# Processing Steps
+
+>Please merge `Survey` to `Response`, by `ClientKey` and `SurveyKey`, so that `SurveyModeName` is attached to `Response`. 
+
+I'm assuming "merge" means inner join.
+
+```{r}
+df <- Response %>% 
+  inner_join(Survey, by = c("ClientKey", "SurveyKey"))
+
+df %>% head() %>% knitr::kable()
+```
+
+
+>Please merge `SurveyItem` to `Response`, by `SurveyItemKey`, so that `SurveyItemVariable`, `ResponseCode` and `TopBoxCode` are attached to `Response`.
+
+```{r}
+df <- df %>% inner_join(SurveyItem, by = c("SurveyItemKey"))
+dim(df)
+```
+
+
+>Please merge `Patient` to `Response`, by `ClientKey` and `PatientKey`, so that `PatientSex` and `PatientBirthDateKey` are attached to Response.
+
+```{r}
+df <- df %>% inner_join(Patient, by = c("ClientKey", "PatientKey"))
+```
+
+>You should now have a single table with all fields from all tables merged into one table. Let’s call this table MergedSurvey
+
+```{r}
+MergedSurvey <- df
+```
+
+As a quick check, I want to see that no rows were dropped.  This looks good.
+
+```{r}
+nrow(df) == nrow(Response)
+```
+
+
+>Please add the following fields to `MergedSurvey`
+
+* `Age`: Please create a new field, based on `PatientBirthDateKey` **(this is just birthdate)**,that calculates age, as of 1/1/2016. 
+* `AgeGroup`: Please create a new field, based on age, with the following age groups and values: “Age1: < 18”, “Age2: 18-39”, “Age3: 40-64”, “Age4: 65+”
+* `TopBoxFlag`:Please create a new field with values of 0 or 1, depending on the SurveyItem’s `SurveyResponseValue` and `TopBoxCode`: 
+    If the `SurveyResponseValue`=`TopBoxCode`, then the value is 1
+    If the `SurveyResponseValue`≠`TopBoxCode` and is not NULL, then the value is 0
+    If the is NULL, then the value is NULL
+
+
+```{r}
+MergedSurvey <- MergedSurvey %>% 
+  mutate(Age = interval(PatientBirthDate, mdy('1-1-2016')) / years(1),
+         AgeGroup = case_when(
+           Age < 18 ~ 'Age1: < 18',
+           Age <= 39 & Age >= 18 ~ 'Age2: 18-39',
+           Age <= 64 & Age >= 40 ~ 'Age3: 40-64',
+           Age >= 65 ~ 'Age4: 65+'),
+         TopBoxFlag = case_when(
+           SurveyResponseValue == TopBoxCode ~ 1,
+           SurveyResponseValue == TopBoxCode & (!is.na(SurveyResponseValue) & !is.na(TopBoxCode)) ~ 0
+           #implied "ELSE" is null
+         ))
+
+MergedSurvey %>% transmute(TopBoxFlag = as.factor(TopBoxFlag)) %>% summary()
+```
+
+Lets quickly check.  This looks good.
+
+```{r}
+MergedSurvey %>% filter(is.na(TopBoxFlag)) %>% select(SurveyResponseValue, TopBoxCode, TopBoxFlag) %>% head() %>% knitr::kable()
+```
+
+
+>Please re-arrange `MergedSurvey` to have one row per `ClientKey`/`PatienKey` key and create separate fields for each `SurveyItemVariable`, where the value for each cell in each field is the value for `TopBoxFlag`, corresponding to that `SurveyItemVariable`. Please name the new fields in correspondence to  `SurveyItemReportName`.
+
+>Please call this new “transposed” table `SurveyMatrix`
+
+```{r}
+new_column_names <- c('Q1_Nurses_Friendly', 'Q2_Nurses_Spent_Time', 'Q3_Physicians_Friendly', 'Q4_Physicians_Spent_Time', 'Q5_Medicine_Instruction', 'Q6_Clarity_of_Treatment_Plan', 'Q7_Environment', 'Q8_Quality_of_Care')
+
+old_column_names <- paste("Question", 1:8)
+
+SurveyMatrix <- MergedSurvey %>% 
+  mutate(TopBoxFlag = coalesce(TopBoxFlag, 0)) %>% #Mising values are cuasing errors in the max function below.  There are no values of 0 anyways, so this is not losing any information
+  spread(SurveyItemName,TopBoxFlag, fill = 0) %>%
+  rename_at(vars(old_column_names), ~ new_column_names) %>% 
+  group_by(ClientKey, PatientKey) %>% 
+  summarise_at(new_column_names, max) %>% 
+  mutate_at(new_column_names, (function(x){ifelse(x == 0, NA, x)})) #converting output flag balues back to NA because this is what the instructions say.  Personally, I would rather use 0 here.
+```
+
+>Please create a .csv file of `SurveyMatrix` to send as part of your solution package
+
+```{r}
+SurveyMatrix %>% write_csv("SurveyMatrix.csv")
+MergedSurvey %>% write_csv("MergedSurvey.csv")
+```
+
+# Data Analysis
+
+To simplify this step, I drop all unneccessary columns.
+
+```{r}
+MergedSurvey <- MergedSurvey %>% 
+  mutate(TopBoxFlag = coalesce(TopBoxFlag, 0)) %>% 
+  select(-contains('Key'), -ResponseCode) %>% 
+  modify_if(is.character, as.factor) 
+```
+
+##Respondents by Sex and Age Group
+
+When looking at the number of respondents we see that most patients are older.
+
+```{r}
+MergedSurvey %>% 
+  mutate(total_respondents = nrow(MergedSurvey)) %>% 
+  group_by(PatientSex, AgeGroup) %>% 
+  summarise(n_respondents = n(),
+         percent_respondents = n_respondents/max(total_respondents)) %>% 
+  ggplot(aes(AgeGroup, percent_respondents, fill = PatientSex)) +
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_discrete(name = "Patient Sex",
+                      breaks = c("Male", "Female", "Unknown")) + 
+  ggtitle("Percentage of Survey Respondents by Patient Sex and Age Group") + 
+  scale_fill_manual(values = c("dodgerblue", "coral", "grey")) + 
+  ylab("Percent of Survery Respondents") + 
+  xlab("Patient Age Group") + 
+  scale_y_continuous(labels = scales::percent) + 
+  theme_light()
+```
+```{r}
+MergedSurvey %>% 
+  group_by(PatientSex, AgeGroup) %>% 
+  summarise(n_respondents = n()) %>% 
+  knitr::kable()
+```
+
+
+## Top Box Performance by Age and Patient Sex
+
+
+* Patients younger than 18 have more top box responses on average.  Is this because the quality of care is better or because these patients don't know or care about responding well?  WHat's the word for this, "Response Apathy"?
+
+
+
+* Why is `PatientSex` unknown?  Is this because the patient specified it as such or because these there is no data for these patients?  If there is no data, then why is the data missing?  Could it be that the patients who are receiving the worst treatment are also not having all of their paperwork processed correctly?
+
+
+
+
+```{r}
+MergedSurvey %>% 
+  group_by(PatientSex, AgeGroup) %>% 
+  summarise(TopBoxPerformance = mean(TopBoxFlag, na.rm = T)) %>% 
+  ggplot(aes(AgeGroup, TopBoxPerformance, fill = PatientSex)) +
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_discrete(name = "Patient Sex",
+                      breaks = c("Male", "Female", "Unknown")) + 
+  ggtitle("Average Top Box Performance by Patient Sex and Age Group") +
+  scale_fill_manual(values = c("dodgerblue", "coral", "grey")) + 
+  ylab("Average Top Box Performance") + 
+  xlab("Patient Age Group") + 
+  scale_y_continuous(labels = scales::percent) + 
+  theme_light()
+```
+
+
+## Top Box Performance by Mode of Survey and Survey Question
+
+Surveys can be completed either online or in paper form.  98% of patients completed the surveys in paper; 2% completed the surveys online.
+
+```{r}
+MergedSurvey %>% 
+  group_by(SurveyMode) %>% 
+  summarise(n = n(),
+            percent = n()/nrow(MergedSurvey)) %>% 
+  knitr::kable()
+```
+
+Each survey has 9 questions.  These cover topics such as the amount of time spent with them by the phsycician, the friendlyness of the nurshing staff, and other similar questions.
+
+```{r}
+MergedSurvey %>% 
+  group_by(SurveyMode, SurveyItemDescription) %>% 
+  summarise(n_respondents = n()) %>% 
+  knitr::kable()
+```
+
+```{r}
+MergedSurvey %>% 
+  group_by(SurveyItemDescription, SurveyMode) %>% 
+  summarise(TopBoxPerformance = mean(TopBoxFlag, na.rm = T)) %>% 
+  ggplot(aes(SurveyItemDescription, TopBoxPerformance, fill = SurveyMode)) +
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_discrete() + 
+  ggtitle("Average Top Box Performance by Survey Mode and Question Topic") +
+  scale_fill_manual(values = c("dodgerblue", "coral", "grey")) + 
+  ylab("Average Top Box Performance") + 
+  xlab("Question Topic") + 
+  scale_y_continuous(labels = scales::percent) + 
+  theme_light() + 
+  coord_flip()
+```
+
+#Identifying Drivers of Quality of Care
+
+```{r}
+MergedSurvey <- MergedSurvey %>% 
+  mutate(response_label = case_when(
+    SurveyResponseValue == 1 ~ "Very Low",
+    SurveyResponseValue == 2 ~ "Low",
+    SurveyResponseValue == 3 ~ "Good",
+    SurveyResponseValue == 4 ~ "Excellent"
+  ),
+  response_label = fct_relevel(response_label, c("Excellent", "Good", "Low","Very Low")),
+  SurveyResponseValueInv = case_when(
+    SurveyResponseValue == 1 ~ -3,
+    SurveyResponseValue == 2 ~ -2,
+    SurveyResponseValue == 3 ~ -1,
+    SurveyResponseValue == 4 ~  1)
+  )
+
+#All patients
+MergedSurvey %>% 
+  # filter(SurveyItemDescription == "Quality of care") %>% 
+  arrange(response_label) %>% 
+  ggplot(aes(SurveyItemDescription,SurveyResponseValueInv, fill = response_label)) + 
+  geom_col(position = position_stack(reverse = TRUE)) + 
+  coord_flip() + 
+  ggtitle("Overall Survey Responses") + 
+  xlab("Number of Respondents") + 
+  ylab("Question Topic") + 
+  scale_fill_manual(values = c("dodgerblue", "dodgerblue4", "grey","coral" )) + 
+  guides(fill=guide_legend(title="Response Level")) + 
+  theme_light() + 
+  theme(legend.position="top") + 
+  scale_y_continuous(breaks = seq(-30000, 30000, by=5000)) 
+```
+
+##Quality of Care by Age
+
+Look at those above 40 and below 40 seperately
+
+```{r}
+MergedSurvey %>% 
+  filter(Age> 40) %>% 
+  arrange(response_label) %>% 
+  ggplot(aes(SurveyItemDescription,SurveyResponseValueInv, fill = response_label, width = 0.6)) + 
+  geom_col(position = position_stack(reverse = TRUE)) + 
+  coord_flip() + 
+  ggtitle("Benchmark: All Patients Over the Age of 40") + 
+  xlab("Number of Respondents") + 
+  ylab("Question Topic") + 
+  scale_fill_manual(values = c("dodgerblue", "dodgerblue4", "grey","coral" )) + 
+  guides(fill=guide_legend(title="Response Level")) + 
+  theme_light() + 
+  theme(legend.position="top") + 
+  scale_y_continuous(breaks = seq(-30000, 30000, by=10000)) 
+
+```
+
+
+
+
